@@ -1,0 +1,252 @@
+---
+title: "R Notebook"
+output: default
+html_notebook:
+---
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(anomalize)
+library(reshape2)
+library(openxlsx)
+```
+
+```{r}
+data <- read_delim("/home/gorka/Escritorio/sleepdata_2.csv", delim = ";")
+data <- select(data, -c("Mood", "Heart rate (bpm)", "Air Pressure (Pa)", "City", "Window start", "Window stop", "Weather temperature (°C)", "Weather type", "Notes"))%>%
+  rename(TiempoDormir = `Time asleep (seconds)`, TiempoCama = `Time in bed (seconds)`, Calidad = `Sleep Quality`, Movimiento = `Movements per hour`, Regularidad = Regularity)%>%
+  mutate(TiempoDormir = as.numeric(TiempoDormir), TiempoCama = as.numeric(TiempoCama), Calidad = as.numeric(sub("%", "", Calidad)), Movimiento = as.numeric(Movimiento), Regularidad = as.numeric(sub("%", "", Regularidad)))
+```
+
+```{r Anomalias en el sueño con anomalize}
+data%>%
+  mutate(End = End, Tiempo = TiempoCama/3600)%>%
+  anomalize(Tiempo)%>%
+ggplot()+
+  geom_line(aes(x=as.Date(End), y = Tiempo))+
+  geom_point(data = . %>% dplyr::filter(anomaly == "Yes"), aes(x=as.Date(End), y = Tiempo, color = anomaly))
+```
+
+```{r Anomalias en el sueño con anomalize con valores}
+quantile(data$TiempoDormir)[2]
+
+data%>%
+  mutate(End = End, Tiempo = TiempoCama/3600)%>%
+  ggplot()+
+  geom_line(aes(x=as.Date(End), y = Tiempo))+
+  geom_point(data = . %>% dplyr::filter(Tiempo >= quantile(Tiempo, probs = 0.975) | Tiempo <= quantile(Tiempo, probs = 0.025)), aes(x=as.Date(End), y = Tiempo, color = "red"))+
+  geom_hline(yintercept = quantile(data$TiempoCama, probs = 0.975)/3600)+
+  geom_hline(yintercept = quantile(data$TiempoCama, probs = 0.025)/3600)
+```
+```{r}
+head(melt(cor(select(data, c("Calidad", "Steps", "Movimiento", "TiempoCama", "TiempoDormir", "Regularidad")))), 6)
+melt(cor(select(data, c("Calidad", "Steps", "Movimiento", "TiempoCama", "TiempoDormir", "Regularidad"))))%>%
+  ggplot(aes(x=Var1, y=Var2, fill=value)) + 
+    geom_tile()
+```
+
+
+```{r}
+data%>%
+  mutate(Calidad = as.numeric(sub("%", "", data$Calidad)), Movimiento = as.numeric(Movimiento))%>%
+  ggplot()+
+  geom_point(aes(x = Movimiento, y = Calidad))+
+  xlim(0,250)
+```
+
+```{r}
+data%>%
+  mutate(Calidad = as.numeric(sub("%", "", data$Calidad)), TiempoAntes = as.numeric(TiempoCama)/3600)%>%
+  ggplot()+
+  geom_point(aes(x = TiempoAntes, y = Calidad))
+```
+
+```{r indices anomalize}
+anomalia <- function(tiempo, valor){
+  ts <- tibble(tiempo, valor)
+  ts_anomalia <- ts%>%
+    time_decompose(valor)%>%
+    anomalize(remainder)
+  index <- which(ts_anomalia$anomaly == "Yes")
+  return (unname(index))
+}
+
+anomalia(data$End, data$TiempoDormir)
+```
+
+```{r}
+anomalia_valor <- function(datos, min, max){
+  index <- which(datos >= max | datos <= min)
+  return (index)
+}
+
+anomalia_valor(data$TiempoDormir, 7800, 24000)
+```
+
+```{r}
+anomalia_percentil <- function(datos, min, max){
+  inf <- quantile(datos, min)
+  sup <- quantile(datos, max)
+  index <- which(datos <= inf | datos >= sup)
+  return (index)
+}
+
+anomalia_percentil(data$TiempoDormir, 0.025, 0.975)
+```
+
+```{r}
+datos <- read.csv("/home/gorka/Escritorio/measurements.csv")
+```
+
+```{r}
+mcycle%>%
+  ggplot()+
+  geom_point(aes(x = times, y = accel))
+```
+
+```{r}
+library(DBI)
+library(RSQLite)
+con <- DBI::dbConnect(SQLite(), "/home/gorka/Escritorio/database.sqlite")
+
+dbListTables(con)
+datos <- dbGetQuery(con, "SELECT * FROM Player_Attributes")
+
+datos%>%
+  dplyr::filter(overall_rating > 85)%>%
+  ggplot()+
+  geom_point(aes(x = long_shots, y = strength))
+```
+```{r}
+linear <- lm(mcycle$accel ~ mcycle$times)
+
+summary(linear)
+
+plot(mcycle$times, mcycle$accel, cex=1.5, pch=19)
+abline(linear)
+```
+
+
+```{r}
+library(splines)
+library(SplinesUtils)
+
+nknots <- 5
+knots <- seq(min(mcycle$times), max(mcycle$times), len = nknots + 2)[-c(1, nknots + 2)]
+knots3 <- unname(quantile(mcycle$times, c(0.1, 0.5, 0.9)))
+knots4 <- unname(quantile(mcycle$times, c(0.05, 0.35, 0.65, 0.95)))
+knots5 <- unname(quantile(mcycle$times, c(0.05, 0.275, 0.5, 0.725, 0.95)))
+spline3 <- lm(mcycle$accel ~ bs(mcycle$times, knots = knots3, degree = 3))
+spline4 <- lm(mcycle$accel ~ bs(mcycle$times, knots = knots4, degree = 3))
+spline5 <- lm(mcycle$accel ~ bs(mcycle$times, knots = knots5, degree = 3))
+
+piece <- RegSplineAsPiecePoly(spline5, "bs(mcycle$times, knots = knots5, degree = 3)")
+
+plot(piece)
+abline(v = solve(piece, deriv = 1), lty = 3, col = 'darkgray')
+abline(h = 0)
+plot(mcycle$times, mcycle$accel)
+
+AIC(spline3)
+AIC(spline4)
+AIC(spline5)
+```
+
+
+```{r}
+raiz <- solve(piece, deriv = 1)
+
+extremos <- predict(piece, raiz)
+```
+
+
+```{r obtener mejor modelo}
+library(caret)
+cv <- function(x, y){
+  # crear la lista de los tipos de nodos
+  nodos <- list()
+  for (i in 3:5) {
+    knots <- seq(min(x), max(x), len = i + 2)[-c(1, i + 2)]
+    nodos[i-2] <- list(knots)
+  }
+  knots3 <- unname(quantile(x, c(0.1, 0.5, 0.9)))
+  knots4 <- unname(quantile(x, c(0.05, 0.35, 0.65, 0.95)))
+  knots5 <- unname(quantile(x, c(0.05, 0.275, 0.5, 0.725, 0.95)))
+  nodos[4] <- list(knots3)
+  nodos[5] <- list(knots4)
+  nodos[6] <- list(knots5)
+  
+  # particiones de los datos para entrenar el modelo
+  cv <- createDataPartition(y, times = 10, p = 0.8)
+  
+  mejor <- Inf
+  
+  datos <- data.frame(x = x, y = y)
+  # entrenar modelos con los distintos nodos
+  for (nodo in nodos){
+    media <- c()
+    # usar todas las muestras
+    for (sample in cv){
+      test <- datos[-unique(sample),]
+      train <- datos[unique(sample),]
+      independiente <- train$x
+      model <- lm(train$y ~ bs(independiente, knots = nodo, degree = 3))
+      suppressWarnings({
+        predictions <- predict(model, data.frame(independiente = test$x))
+      })
+      RMSE <- RMSE(predictions, test$y)
+      media[length(media)+1] <- RMSE 
+    }
+    # calcular la media de los errores
+    if (mean(media) < mejor){
+      mejor <- mean(media)
+      modelo <- model
+    }
+  }
+  return (modelo)
+}
+```
+
+```{r valor maximo del modelo}
+optimo <- function(modelo){
+  piece <- RegSplineAsPiecePoly(modelo, "bs(independiente, knots = nodo, degree = 3)")
+  
+  raiz <- solve(piece, deriv = 1)
+  extremos <- predict(piece, raiz)
+  
+  max <- which.max(extremos)
+  return (raiz[max])
+}
+```
+
+```{r}
+model <- train(accel ~ times, data = mcycle, method = "gam", trControl = trainControl(method = "cv", number = 10))
+plot(mcycle$times, predict(model, newdata = mcycle))
+RMSE(mcycle$accel, predict(model, newdata = mcycle))
+```
+
+```{r}
+maximo <- function(df){
+  bootstrap <- bootstraps(df, times = 50)
+  media <- c()
+  for (sample in bootstrap$splits){
+    data <- as.data.frame(sample)
+    # cambiar nombre de las columnas
+    modelo <- train(accel ~ times, data = data, method = "gam", trControl = trainControl(method = "cv", number = 10))
+    newx <- seq(min(data$times), max(data$times), len = 200)
+    predicciones <- predict(modelo, newdata = data.frame(times = newx))
+    max <- newx[which.max(predicciones)]
+    media[length(media)+1] <- max
+  }
+  return (mean(media))
+}
+
+start_time <- Sys.time()  
+maximo(mcycle)
+Sys.time() - start_time 
+```
+
